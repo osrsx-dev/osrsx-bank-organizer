@@ -4,7 +4,6 @@ import io.osrsx.api.Overlays
 import io.osrsx.config.PluginConfig
 import io.osrsx.config.eq
 import io.osrsx.plugin.Plugin
-import io.osrsx.plugin.PluginDescriptor
 import io.osrsx.plugin.HasPanel
 import io.osrsx.plugin.PanelBuilder
 import io.osrsx.api.Widget
@@ -26,13 +25,6 @@ import io.osrsx.api.Widget
  * IS (tabs occupy the leading slots, read via tab sizes) vs where it BELONGS, and fixes one item — so
  * a stray item is just re-filed next pass. Run "Continuous" to keep the bank tidy as it changes.
  */
-@PluginDescriptor(
-    name = "Bank Organizer",
-    description = "Files the whole bank into smart category tabs (or sorts it) by humanised drag-and-drop.",
-    author = "osrsx",
-    tags = ["bank", "utility", "organise"],
-    defaultPriority = 2,
-)
 class BankOrganizerPlugin : Plugin(), HasPanel {
 
     object Config : PluginConfig("bankorganizer") {
