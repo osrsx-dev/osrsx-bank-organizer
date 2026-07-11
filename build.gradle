@@ -2,6 +2,8 @@ apply plugin: 'io.osrsx.plugin'
 
 osrsxPlugin {
     id = 'bank-organizer'
+    main = 'io.osrsx.plugins.bankorganizer.BankOrganizerPlugin'
+    defaultPriority = 2
     group = 'io.osrsx.plugins'
     version = '1.2.0'
     name = 'Bank Organizer'
