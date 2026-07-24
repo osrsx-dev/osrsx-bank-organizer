@@ -3,9 +3,10 @@ package io.osrsx.plugins.bankorganizer
 import io.osrsx.api.ui.Overlays
 import io.osrsx.plugin.PluginSettings
 import io.osrsx.plugin.eq
-import io.osrsx.plugin.Plugin
+import io.osrsx.plugin.ClientThreadPlugin
 import io.osrsx.plugin.HasPanel
 import io.osrsx.plugin.Gfx2D
+import io.osrsx.plugin.routine
 import io.osrsx.api.ui.Widget
 
 /**
@@ -25,7 +26,7 @@ import io.osrsx.api.ui.Widget
  * IS (tabs occupy the leading slots, read via tab sizes) vs where it BELONGS, and fixes one item — so
  * a stray item is just re-filed next pass. Run "Continuous" to keep the bank tidy as it changes.
  */
-class BankOrganizerPlugin : Plugin(), HasPanel {
+class BankOrganizerPlugin : ClientThreadPlugin(), HasPanel {
 
     object Config : PluginSettings("bankorganizer") {
         var mode by enumItem(
@@ -132,8 +133,21 @@ class BankOrganizerPlugin : Plugin(), HasPanel {
         input.unlock(); status = "stopped"
     }
 
-    override fun onLoop(): Long {
-        if (!login.isLoggedIn()) return 1000
+    // Client-thread model, LIGHT conversion: this plugin is action-dominated (a stateful drag machine
+    // whose reads follow its own writes with settle waits), so there is no exactness win in splitting
+    // its planner out — the gate decides on the client thread and the whole organize pass runs as the
+    // intent on the actuator drain, its returned delay pacing decisions exactly as the old loop did.
+    // Note: the op-cap's NO_LOOP now maps to requestStop() — the plugin visibly disables at the cap
+    // instead of idling enabled.
+    private val core by lazy {
+        routine(ctx.profiler(), "bank-organizer") {
+            step("organize", { login.isLoggedIn() }) { organizePass() }
+        }
+    }
+
+    override fun onClientTick() = drive(core)
+
+    private fun organizePass(): Long {
         if (Config.lockInput) input.lock() else input.unlock()
         if (!ensureBank()) return 800
         if (!bank.viewAllItems()) {
