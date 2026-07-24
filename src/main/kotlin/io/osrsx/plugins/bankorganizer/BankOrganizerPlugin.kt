@@ -3,10 +3,9 @@ package io.osrsx.plugins.bankorganizer
 import io.osrsx.api.ui.Overlays
 import io.osrsx.plugin.PluginSettings
 import io.osrsx.plugin.eq
-import io.osrsx.plugin.ClientThreadPlugin
-import io.osrsx.plugin.HasPanel
 import io.osrsx.plugin.Gfx2D
-import io.osrsx.plugin.routine
+import io.osrsx.script.ScriptPlugin
+import io.osrsx.script.stagedScript
 import io.osrsx.api.ui.Widget
 
 /**
@@ -26,7 +25,7 @@ import io.osrsx.api.ui.Widget
  * IS (tabs occupy the leading slots, read via tab sizes) vs where it BELONGS, and fixes one item — so
  * a stray item is just re-filed next pass. Run "Continuous" to keep the bank tidy as it changes.
  */
-class BankOrganizerPlugin : ClientThreadPlugin(), HasPanel {
+class BankOrganizerPlugin : ScriptPlugin() {
 
     object Config : PluginSettings("bankorganizer") {
         var mode by enumItem(
@@ -112,8 +111,9 @@ class BankOrganizerPlugin : ClientThreadPlugin(), HasPanel {
         var want = 0  // the tab this item BELONGS in
     }
 
+    // Named orgStatus (not `status`): ScriptPlugin publishes a `status` member the old name would hide.
     @Volatile
-    private var status = "idle"
+    private var orgStatus = "idle"
 
     @Volatile
     private var ops = 0
@@ -125,36 +125,37 @@ class BankOrganizerPlugin : ClientThreadPlugin(), HasPanel {
     private var scanned = 0
     private var done = false
 
-    override fun onStart() {
-        ops = 0; planned = 0; scanned = 0; done = false; status = "started"
+    override fun onScriptStart() {
+        ops = 0; planned = 0; scanned = 0; done = false; orgStatus = "started"
     }
 
-    override fun onStop() {
-        input.unlock(); status = "stopped"
+    override fun onScriptStop() {
+        input.unlock(); orgStatus = "stopped"
     }
 
-    // Client-thread model, LIGHT conversion: this plugin is action-dominated (a stateful drag machine
-    // whose reads follow its own writes with settle waits), so there is no exactness win in splitting
-    // its planner out — the gate decides on the client thread and the whole organize pass runs as the
-    // intent on the actuator drain, its returned delay pacing decisions exactly as the old loop did.
-    // Note: the op-cap's NO_LOOP now maps to requestStop() — the plugin visibly disables at the cap
-    // instead of idling enabled.
-    private val core by lazy {
-        routine(ctx.profiler(), "bank-organizer") {
-            step("organize", { login.isLoggedIn() }) { organizePass() }
+    // ONE plugin model, coarse-intent conversion: this plugin is action-dominated (a stateful drag
+    // machine whose reads follow its own writes with settle waits), so there is no exactness win in
+    // splitting its planner out — the stage gate decides on the client thread (the script pump) and the
+    // whole organize pass runs as ONE act on the actuator drain, its returned delay (park) pacing
+    // decisions exactly as the old loop did. Note: the op-cap's negative return maps to requestStop() —
+    // the plugin visibly disables at the cap instead of idling enabled (park would coerce it to 0).
+    override fun script() = stagedScript<Unit>("bank-organizer") {
+        readState { }
+        isComplete { false } // cyclic — 'Once' mode / the op cap end the run via requestStop()
+        stage("organize", { login.isLoggedIn() }) {
+            val d = act("organize") { organizePass() }
+            if (d < 0) { this@BankOrganizerPlugin.requestStop(); park(600) } else park(d)
         }
-    }
-
-    override fun onClientTick() = drive(core)
+    }.toScript()
 
     private fun organizePass(): Long {
         if (Config.lockInput) input.lock() else input.unlock()
         if (!ensureBank()) return 800
         if (!bank.viewAllItems()) {
-            status = "switching to View all"; return 600
+            orgStatus = "switching to View all"; return 600
         }
         if (capped()) {
-            status = "op cap reached"; return -1
+            orgStatus = "op cap reached"; return -1
         }
         return when (Config.mode) {
             "Clear tabs" -> loopClearTabs()
@@ -172,9 +173,9 @@ class BankOrganizerPlugin : ClientThreadPlugin(), HasPanel {
     private fun ensureBank(): Boolean {
         if (bank.isOpen()) return true
         if (!Config.autoOpen) {
-            status = "open the bank"; return false
+            orgStatus = "open the bank"; return false
         }
-        status = "opening bank"
+        orgStatus = "opening bank"
         bank.open()
         io.osrsx.util.Wait.until(3000) { bank.isOpen() }
         return bank.isOpen()
@@ -262,7 +263,7 @@ class BankOrganizerPlugin : ClientThreadPlugin(), HasPanel {
         val totalTabs = if (needOther) otherTab else plan.size
         scanned = totalTabs
         if (totalTabs == 0) {
-            status = "nothing to tab"; return onceOr(3000)
+            orgStatus = "nothing to tab"; return onceOr(3000)
         }
 
         if (Config.dryRun) {
@@ -284,7 +285,7 @@ class BankOrganizerPlugin : ClientThreadPlugin(), HasPanel {
 
         // 1. Clean up any STRAY tab beyond the ones we want (a misfire could have spawned one): empty it.
         list.firstOrNull { it.tab > totalTabs }?.let { stray ->
-            status = "removing stray tab"; if (moveItem(stray.id, tabButton("View all items"))) ops++
+            orgStatus = "removing stray tab"; if (moveItem(stray.id, tabButton("View all items"))) ops++
             done = false; return capOr(delay())
         }
 
@@ -293,21 +294,21 @@ class BankOrganizerPlugin : ClientThreadPlugin(), HasPanel {
             if (p > nTabs) {
                 if (p == nTabs + 1) {
                     list.firstOrNull { it.want == p && it.tab == 0 }?.let { seed ->
-                        status = "new tab: ${tabName(p)}"; if (moveItem(seed.id, tabButton("New tab"))) ops++
+                        orgStatus = "new tab: ${tabName(p)}"; if (moveItem(seed.id, tabButton("New tab"))) ops++
                         done = false; return capOr(delay())
                     }
                     list.firstOrNull { it.want == p && it.tab != 0 }?.let { stuck ->  // all in wrong tabs → free one
-                        status = "freeing ${tabName(p)}"; if (moveItem(stuck.id, tabButton("View all items"))) ops++
+                        orgStatus = "freeing ${tabName(p)}"; if (moveItem(stuck.id, tabButton("View all items"))) ops++
                         done = false; return capOr(delay())
                     }
                 }
             } else {
                 list.firstOrNull { it.want == p && it.tab != p }?.let { miss ->
-                    status = "filing ${tabName(p)}"; if (moveItem(miss.id, tabIconAt(p))) ops++
+                    orgStatus = "filing ${tabName(p)}"; if (moveItem(miss.id, tabIconAt(p))) ops++
                     done = false; return capOr(delay())
                 }
                 list.firstOrNull { it.tab == p && it.want != p }?.let { bad ->
-                    status = "evicting from ${tabName(p)}"; if (moveItem(bad.id, tabButton("View all items"))) ops++
+                    orgStatus = "evicting from ${tabName(p)}"; if (moveItem(bad.id, tabButton("View all items"))) ops++
                     done = false; return capOr(delay())
                 }
             }
@@ -316,7 +317,7 @@ class BankOrganizerPlugin : ClientThreadPlugin(), HasPanel {
         if (!done) {
             done = true; log.i("bank: tabs organised ($totalTabs tabs)")
         }
-        status = "tabs tidy ($totalTabs tabs)"
+        orgStatus = "tabs tidy ($totalTabs tabs)"
         return onceOr(4000)
     }
 
@@ -336,7 +337,7 @@ class BankOrganizerPlugin : ClientThreadPlugin(), HasPanel {
             if (!done) {
                 done = true; log.i("bank: sorted ${scanned} items by ${Config.sortBy}")
             }
-            status = "sorted ($scanned)"; return onceOr(2500)
+            orgStatus = "sorted ($scanned)"; return onceOr(2500)
         }
         done = false
 
@@ -345,14 +346,14 @@ class BankOrganizerPlugin : ClientThreadPlugin(), HasPanel {
             target = k; break
         }
         if (target < 0) {
-            status = "plan stalled"; return 1000
+            orgStatus = "plan stalled"; return 1000
         }
 
         if (Config.dryRun) {
             log.i("bank [dry]: $planned inserts; ${cur[target].name} -> slot ${cur[fix].slot}"); return -1
         }
 
-        status = "sorting: $planned left"
+        orgStatus = "sorting: $planned left"
         // INSERT the desired item (at `target`) into position `fix`; scroll-aware drag reaches off-screen
         // ends and shifts the rest along (Insert never displaces a just-placed item — no thrash).
         if (widgets.dragScroll(slotWidget(cur[target].slot), slotWidget(cur[fix].slot), viewport())) ops++
@@ -396,9 +397,9 @@ class BankOrganizerPlugin : ClientThreadPlugin(), HasPanel {
             if (!done) {
                 done = true; log.i("bank: all tabs cleared")
             }
-            status = "no tabs"; return onceOr(3000)
+            orgStatus = "no tabs"; return onceOr(3000)
         }
-        done = false; status = "$n tab(s) left"
+        done = false; orgStatus = "$n tab(s) left"
         // The first item of the leftmost tab, dragged onto "View all items", leaves that tab; when the
         // tab empties it vanishes. We locate that item by id (from the leading slot range) and move it.
         val list = readBank()
@@ -414,12 +415,12 @@ class BankOrganizerPlugin : ClientThreadPlugin(), HasPanel {
 
     private fun onceOr(continuousMs: Long): Long = if (Config.runMode == "Once") -1 else continuousMs
     private fun capOr(ms: Long): Long = if (capped()) {
-        status = "op cap reached"; -1
+        orgStatus = "op cap reached"; -1
     } else ms
 
     override fun onPanel(gfx: Gfx2D) {
         gfx.text("Mode: ${Config.mode}")
-        gfx.text("Status: $status")
+        gfx.text("Status: $orgStatus")
         gfx.text("Misplaced: $planned")
         gfx.text("Moves done: $ops")
         if (Config.dryRun) gfx.textColored(ACCENT, "PREVIEW — no drags")
