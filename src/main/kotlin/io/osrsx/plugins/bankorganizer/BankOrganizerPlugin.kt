@@ -1,12 +1,12 @@
 package io.osrsx.plugins.bankorganizer
 
-import io.osrsx.api.Overlays
-import io.osrsx.config.PluginConfig
-import io.osrsx.config.eq
+import io.osrsx.api.ui.Overlays
+import io.osrsx.plugin.PluginSettings
+import io.osrsx.plugin.eq
 import io.osrsx.plugin.Plugin
 import io.osrsx.plugin.HasPanel
-import io.osrsx.plugin.PanelBuilder
-import io.osrsx.api.Widget
+import io.osrsx.plugin.Gfx2D
+import io.osrsx.api.ui.Widget
 
 /**
  * Bank organiser. Files the whole bank into smart category tabs (or insertion-sorts it), by
@@ -19,7 +19,7 @@ import io.osrsx.api.Widget
  *  2. Use INSERT rearrange mode for ordering — a swap can bounce a just-placed item back out (thrash).
  *
  * Every move is deterministic and self-checking: it locates the item by id, brings it to the viewport
- * centre via the bank's own scrollbar math ([io.osrsx.api.Bank.bringItemIntoView]), confirms it's
+ * centre via the bank's own scrollbar math ([io.osrsx.api.items.Bank.bringItemIntoView]), confirms it's
  * actually visible, THEN drags. It never grabs a scrolled-out / wrong widget, so it can't do a stray
  * drag or spawn a stray tab. "Auto tabs" is self-correcting: each loop it works out where every item
  * IS (tabs occupy the leading slots, read via tab sizes) vs where it BELONGS, and fixes one item — so
@@ -27,7 +27,7 @@ import io.osrsx.api.Widget
  */
 class BankOrganizerPlugin : Plugin(), HasPanel {
 
-    object Config : PluginConfig("bankorganizer") {
+    object Config : PluginSettings("bankorganizer") {
         var mode by enumItem(
             "mode", "Mode", "Auto tabs", listOf("Auto tabs", "Sort all", "Clear tabs"),
             "'Auto tabs' files items into a bank tab per category. 'Sort all' reorders every item by the " +
@@ -81,7 +81,7 @@ class BankOrganizerPlugin : Plugin(), HasPanel {
         )
     }
 
-    override fun config() = Config
+    override fun settings() = Config
 
     // The broad buckets, in display/tab order; "Misc" (last) is the catch-all. Matches the item_cats table:
     // "Weapons & Tools" is one weapon-slot tab (weapons + pickaxes/axes/hammers), seeds live with Herblore.
@@ -403,14 +403,12 @@ class BankOrganizerPlugin : Plugin(), HasPanel {
         status = "op cap reached"; -1
     } else ms
 
-    override fun onPanel(p: PanelBuilder) {
-        p.width(160)
-        p.title("Bank Organizer")
-        p.line("Mode", Config.mode)
-        p.line("Status", status)
-        p.line("Misplaced", planned.toString())
-        p.line("Moves done", ops.toString())
-        if (Config.dryRun) p.text("PREVIEW — no drags", PanelBuilder.ACCENT)
+    override fun onPanel(gfx: Gfx2D) {
+        gfx.text("Mode: ${Config.mode}")
+        gfx.text("Status: $status")
+        gfx.text("Misplaced: $planned")
+        gfx.text("Moves done: $ops")
+        if (Config.dryRun) gfx.textColored(ACCENT, "PREVIEW — no drags")
     }
 
 
@@ -419,6 +417,9 @@ class BankOrganizerPlugin : Plugin(), HasPanel {
         const val ITEMS = 12     // the item container component
         const val TABBAR = 10    // the tab bar component
         const val MAX_TABS = 9
+
+        /** Accent colour for the preview banner (the old PanelBuilder.ACCENT, packed 0xAARRGGBB). */
+        const val ACCENT = 0xFF5B8CFF.toInt()
 
         /** How long to wait for a drag to register in the tab varbits before proceeding — early-exits the
          *  instant the tab layout changes, so this is only the ceiling for a move that didn't take. */
